@@ -874,4 +874,707 @@
       </div>
     </div>
 
-    <div class="chart-card
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">💰 Receitas por categoria</div>
+        <div class="chart-subtitle" id="pieIncomePeriodLabel">este mês</div>
+      </div>
+      <div id="pieIncomeContent">
+        <div class="chart-empty">Sem receitas para exibir</div>
+      </div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">📊 Histórico mensal</div>
+        <div class="chart-subtitle">receitas × despesas</div>
+      </div>
+      <div class="bars-scroll-wrapper" id="barsScrollWrapper">
+        <div id="barContent">
+          <div class="chart-empty">Sem histórico para exibir</div>
+        </div>
+      </div>
+      <div class="scroll-hint" id="scrollHint">← Deslize para ver meses anteriores →</div>
+    </div>
+  </div>
+
+  <ul class="expense-list" id="expenseList"></ul>
+
+  <div class="empty-state" id="emptyState">
+    <div class="icon">💸</div>
+    <h2>Nenhum lançamento registrado</h2>
+    <p>Adicione sua primeira despesa ou receita no formulário acima.</p>
+  </div>
+
+  <footer class="footer">
+    Dados salvos automaticamente no seu dispositivo 📱
+  </footer>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+
+  <script>
+    (function() {
+      'use strict';
+
+      const STORAGE_KEY = 'financas_v3';
+      const MONTHS_VISIBLE = 6;
+
+      const CATEGORIES = {
+        alimentacao:   { name: 'Alimentação',   icon: '🍔', class: 'cat-alimentacao',   type: 'expense', color: '#e57373' },
+        transporte:    { name: 'Transporte',    icon: '🚗', class: 'cat-transporte',    type: 'expense', color: '#64b5f6' },
+        moradia:       { name: 'Moradia',       icon: '🏠', class: 'cat-moradia',       type: 'expense', color: '#ba68c8' },
+        saude:         { name: 'Saúde',         icon: '💊', class: 'cat-saude',         type: 'expense', color: '#81c784' },
+        lazer:         { name: 'Lazer',         icon: '🎮', class: 'cat-lazer',         type: 'expense', color: '#ffb74d' },
+        educacao:      { name: 'Educação',      icon: '📚', class: 'cat-educacao',      type: 'expense', color: '#4dd0e1' },
+        outros:        { name: 'Outros',        icon: '📦', class: 'cat-outros',        type: 'expense', color: '#90a4ae' },
+        salario:       { name: 'Salário',       icon: '💼', class: 'cat-salario',       type: 'income',  color: '#4db6ac' },
+        freelance:     { name: 'Freelance',     icon: '💻', class: 'cat-freelance',     type: 'income',  color: '#7986cb' },
+        investimentos: { name: 'Investimentos', icon: '📈', class: 'cat-investimentos', type: 'income',  color: '#aed581' },
+        mesada:        { name: 'Mesada',        icon: '🎁', class: 'cat-mesada',        type: 'income',  color: '#f06292' },
+        apostas:       { name: 'Apostas',       icon: '🎲', class: 'cat-apostas',       type: 'income',  color: '#9575cd' },
+        vendas:        { name: 'Vendas',        icon: '🏷️', class: 'cat-vendas',        type: 'income',  color: '#ffb74d' },
+        doacoes:       { name: 'Doações',       icon: '❤️', class: 'cat-doacoes',       type: 'income',  color: '#81c784' }
+      };
+
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+                    || (navigator.maxTouchPoints && navigator.maxTouchPoints > 2 && /Macintosh/.test(navigator.userAgent));
+
+      const descInput = document.getElementById('descInput');
+      const amountInput = document.getElementById('amountInput');
+      const categoryInput = document.getElementById('categoryInput');
+      const dateInput = document.getElementById('dateInput');
+      const addExpenseBtn = document.getElementById('addExpenseBtn');
+      const addIncomeBtn = document.getElementById('addIncomeBtn');
+      const expenseList = document.getElementById('expenseList');
+      const emptyState = document.getElementById('emptyState');
+      const balanceValue = document.getElementById('balanceValue');
+      const incomeValue = document.getElementById('incomeValue');
+      const expenseValue = document.getElementById('expenseValue');
+      const filtersBar = document.getElementById('filtersBar');
+      const monthFilter = document.getElementById('monthFilter');
+      const clearMonthBtn = document.getElementById('clearMonthBtn');
+      const pieExpenseContent = document.getElementById('pieExpenseContent');
+      const pieIncomeContent = document.getElementById('pieIncomeContent');
+      const barContent = document.getElementById('barContent');
+      const pieExpensePeriodLabel = document.getElementById('pieExpensePeriodLabel');
+      const pieIncomePeriodLabel = document.getElementById('pieIncomePeriodLabel');
+      const barsScrollWrapper = document.getElementById('barsScrollWrapper');
+      const scrollHint = document.getElementById('scrollHint');
+      const exportExcelBtn = document.getElementById('exportExcelBtn');
+      const exportPdfBtn = document.getElementById('exportPdfBtn');
+      const toast = document.getElementById('toast');
+
+      let transactions = [];
+      let currentFilter = 'all';
+
+      function getCurrentMonthKey() {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      }
+      let currentMonth = getCurrentMonthKey();
+
+      function loadTransactions() {
+        try {
+          let stored = localStorage.getItem(STORAGE_KEY);
+          if (!stored) stored = localStorage.getItem('financas_v2');
+          if (stored) {
+            transactions = JSON.parse(stored);
+            if (!Array.isArray(transactions)) transactions = [];
+            transactions = transactions.map(t => ({
+              ...t,
+              type: t.type || 'expense',
+              date: t.date || new Date(t.createdAt || Date.now()).toISOString().split('T')[0]
+            }));
+          }
+        } catch (e) { transactions = []; }
+      }
+
+      function saveTransactions() {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions)); } catch (e) {}
+      }
+
+      function formatCurrency(value) {
+        return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
+      }
+
+      function todayISO() {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      }
+
+      function parseDateLocal(isoDate) {
+        const [y, m, d] = isoDate.split('-').map(Number);
+        return new Date(y, m - 1, d);
+      }
+
+      function formatDateDisplay(isoDate) {
+        const d = parseDateLocal(isoDate);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const diffDays = Math.round((today - d) / (1000 * 60 * 60 * 24));
+        if (diffDays === 0) return 'Hoje';
+        if (diffDays === 1) return 'Ontem';
+        if (diffDays > 1 && diffDays < 7) return `${diffDays} dias atrás`;
+        return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      }
+
+      function formatDateBR(isoDate) {
+        const d = parseDateLocal(isoDate);
+        return d.toLocaleDateString('pt-BR');
+      }
+
+      function getMonthLabel(isoDate) {
+        const d = parseDateLocal(isoDate);
+        const name = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+        return name.charAt(0).toUpperCase() + name.slice(1);
+      }
+
+      function getMonthKey(isoDate) { return isoDate.substring(0, 7); }
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      function showToast(msg, type) {
+        toast.textContent = msg;
+        toast.className = 'toast show' + (type ? ' ' + type : '');
+        clearTimeout(toast._t);
+        toast._t = setTimeout(() => {
+          toast.className = 'toast';
+        }, 3500);
+      }
+
+      function truncate(text, maxChars) {
+        if (!text) return '';
+        if (text.length <= maxChars) return text;
+        return text.substring(0, maxChars - 1).trimEnd() + '…';
+      }
+
+      function blobToDataURL(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      async function tryWebShare(blob, fileName, mimeType) {
+        if (!navigator.share || !navigator.canShare) return false;
+        try {
+          const file = new File([blob], fileName, { type: mimeType });
+          if (!navigator.canShare({ files: [file] })) return false;
+          await navigator.share({
+            files: [file],
+            title: 'Finanças - Relatório',
+            text: 'Segue o relatório financeiro.'
+          });
+          return true;
+        } catch (err) {
+          if (err.name === 'AbortError') return true;
+          console.warn('Web Share falhou:', err);
+          return false;
+        }
+      }
+
+      function tryNativeBridge(blob, fileName) {
+        try {
+          if (window.Android && typeof window.Android.shareFile === 'function') {
+            blobToDataURL(blob).then(dataUrl => {
+              try { window.Android.shareFile(dataUrl, fileName, blob.type || ''); }
+              catch (e) { try { window.Android.shareFile(dataUrl, fileName); } catch (e2) {} }
+            });
+            return true;
+          }
+        } catch (e) {}
+        try {
+          if (window.AndroidBridge && typeof window.AndroidBridge.shareFile === 'function') {
+            blobToDataURL(blob).then(dataUrl => {
+              window.AndroidBridge.shareFile(dataUrl, fileName, blob.type || '');
+            });
+            return true;
+          }
+        } catch (e) {}
+        try {
+          if (window.plugins && window.plugins.socialsharing &&
+              typeof window.plugins.socialsharing.shareWithOptions === 'function') {
+            blobToDataURL(blob).then(dataUrl => {
+              window.plugins.socialsharing.shareWithOptions({
+                files: [dataUrl], subject: 'Finanças - Relatório',
+                chooserTitle: 'Compartilhar relatório'
+              });
+            });
+            return true;
+          }
+        } catch (e) {}
+        try {
+          if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Share) {
+            blobToDataURL(blob).then(async dataUrl => {
+              const { uri } = await window.Capacitor.Plugins.Filesystem.writeFile({
+                path: fileName, data: dataUrl.split(',')[1],
+                directory: 'CACHE', encoding: 'base64'
+              });
+              await window.Capacitor.Plugins.Share.share({
+                title: 'Finanças - Relatório', url: uri,
+                dialogTitle: 'Compartilhar relatório'
+              });
+            });
+            return true;
+          }
+        } catch (e) {}
+        try {
+          if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
+            blobToDataURL(blob).then(dataUrl => {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'share', filename: fileName, data: dataUrl
+              }));
+            });
+            return true;
+          }
+        } catch (e) {}
+        return false;
+      }
+
+      function fallbackOpenOrDownload(blob, fileName) {
+        try {
+          const url = URL.createObjectURL(blob);
+          if (isMobile) {
+            const newTab = window.open(url, '_blank');
+            if (!newTab) {
+              const a = document.createElement('a');
+              a.href = url; a.download = fileName; a.rel = 'noopener';
+              document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            }
+          } else {
+            const newTab = window.open(url, '_blank');
+            if (!newTab) {
+              const a = document.createElement('a');
+              a.href = url; a.download = fileName;
+              document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            }
+          }
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+          return true;
+        } catch (e) {
+          console.error('Fallback falhou:', e);
+          return false;
+        }
+      }
+
+      async function shareOrDownload(blob, fileName, mimeType) {
+        if (isMobile) {
+          const shared = await tryWebShare(blob, fileName, mimeType);
+          if (shared) {
+            showToast('📤 Arquivo compartilhado!', 'success');
+            if (navigator.vibrate) navigator.vibrate([30, 20, 30]);
+            return;
+          }
+          const bridge = tryNativeBridge(blob, fileName);
+          if (bridge) {
+            showToast('📤 Abrindo opções de compartilhamento...', 'success');
+            if (navigator.vibrate) navigator.vibrate([30, 20, 30]);
+            return;
+          }
+          const ok = fallbackOpenOrDownload(blob, fileName);
+          if (ok) {
+            showToast('📤 Escolha um app para abrir o arquivo', 'info');
+          } else {
+            showToast('Não foi possível exportar o arquivo', 'error');
+          }
+        } else {
+          const ok = fallbackOpenOrDownload(blob, fileName);
+          if (ok) {
+            showToast('Arquivo gerado! Abrindo para visualização...', 'success');
+          } else {
+            showToast('Erro ao abrir o arquivo', 'error');
+          }
+        }
+        if (navigator.vibrate) navigator.vibrate([30, 20, 30]);
+      }
+
+      function addTransaction(desc, amount, category, date, type) {
+        const trimmed = desc.trim();
+        if (!trimmed || !amount || amount <= 0 || !category || !date) { shakeForm(); return; }
+        const cat = CATEGORIES[category];
+        if (!cat || cat.type !== type) {
+          category = type === 'income' ? 'salario' : 'outros';
+        }
+        const transaction = {
+          id: Date.now() + Math.random().toString(36).substr(2, 9),
+          desc: trimmed, amount: parseFloat(amount), category, type, date,
+          createdAt: Date.now()
+        };
+        transactions.unshift(transaction);
+        saveTransactions();
+        const txMonth = getMonthKey(date);
+        if (currentMonth && txMonth !== currentMonth) {
+          currentMonth = txMonth;
+          monthFilter.value = currentMonth;
+        }
+        render();
+        updateSummary();
+        renderPieCharts();
+        renderBarChart();
+        descInput.value = '';
+        amountInput.value = '';
+        dateInput.value = todayISO();
+        descInput.focus();
+        if (navigator.vibrate) navigator.vibrate(type === 'income' ? [30, 20, 30] : 30);
+      }
+
+      function deleteTransaction(id) {
+        const element = document.querySelector(`[data-id="${id}"]`);
+        const doDelete = () => {
+          transactions = transactions.filter(t => t.id !== id);
+          saveTransactions();
+          render();
+          updateSummary();
+          renderPieCharts();
+          renderBarChart();
+        };
+        if (element) {
+          element.classList.add('removing');
+          setTimeout(doDelete, 300);
+        } else { doDelete(); }
+        if (navigator.vibrate) navigator.vibrate([20, 30, 20]);
+      }
+
+      function shakeForm() {
+        const form = document.querySelector('.form-area');
+        form.style.animation = 'none';
+        setTimeout(() => { form.style.animation = 'shake 0.3s'; }, 10);
+        if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
+      }
+
+      function getFilteredTransactions() {
+        let filtered = transactions;
+        if (currentFilter !== 'all') filtered = filtered.filter(t => t.category === currentFilter);
+        if (currentMonth) filtered = filtered.filter(t => getMonthKey(t.date) === currentMonth);
+        return [...filtered].sort((a, b) => {
+          if (a.date !== b.date) return b.date.localeCompare(a.date);
+          return b.createdAt - a.createdAt;
+        });
+      }
+
+      function render() {
+        const filtered = getFilteredTransactions();
+        expenseList.innerHTML = '';
+        if (filtered.length === 0) {
+          emptyState.style.display = 'flex';
+          expenseList.style.display = 'none';
+          if (currentFilter !== 'all' || currentMonth) {
+            emptyState.querySelector('h2').textContent = 'Nenhum lançamento encontrado';
+            emptyState.querySelector('p').textContent = 'Tente ajustar os filtros ou adicionar um novo lançamento.';
+          } else {
+            emptyState.querySelector('h2').textContent = 'Nenhum lançamento registrado';
+            emptyState.querySelector('p').textContent = 'Adicione sua primeira despesa ou receita no formulário acima.';
+          }
+          return;
+        }
+        emptyState.style.display = 'none';
+        expenseList.style.display = 'flex';
+        const groups = {};
+        filtered.forEach(tx => {
+          const k = getMonthKey(tx.date);
+          if (!groups[k]) groups[k] = [];
+          groups[k].push(tx);
+        });
+        Object.keys(groups).sort().reverse().forEach(monthKey => {
+          const monthTxs = groups[monthKey];
+          const mIncome = monthTxs.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+          const mExpense = monthTxs.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+          const mBalance = mIncome - mExpense;
+          const header = document.createElement('li');
+          header.className = 'expense-group-header';
+          const color = mBalance >= 0 ? 'var(--success)' : 'var(--danger)';
+          header.innerHTML = `
+            <span>📅 ${getMonthLabel(monthTxs[0].date)}</span>
+            <span class="expense-group-total" style="color:${color}">Saldo: ${formatCurrency(mBalance)}</span>
+          `;
+          expenseList.appendChild(header);
+          monthTxs.forEach(tx => {
+            const cat = CATEGORIES[tx.category] || CATEGORIES.outros;
+            const isIncome = tx.type === 'income';
+            const li = document.createElement('li');
+            li.className = 'expense-item ' + (isIncome ? 'type-income' : 'type-expense');
+            li.dataset.id = tx.id;
+            li.innerHTML = `
+              <div class="category-icon ${cat.class}">${cat.icon}</div>
+              <div class="expense-content">
+                <div class="expense-desc">${escapeHtml(tx.desc)}</div>
+                <div class="expense-meta">
+                  <span>${cat.name}</span>
+                  <span>•</span>
+                  <span>${formatDateDisplay(tx.date)}</span>
+                </div>
+              </div>
+              <div class="expense-amount ${isIncome ? 'amount-income' : 'amount-expense'}">
+                ${isIncome ? '+' : '−'} ${formatCurrency(tx.amount)}
+              </div>
+              <button class="btn-delete" data-action="delete" aria-label="Excluir">🗑️</button>
+            `;
+            expenseList.appendChild(li);
+          });
+        });
+      }
+
+      function updateSummary() {
+        const filtered = getFilteredTransactions();
+        const income = filtered.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+        const expense = filtered.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+        const balance = income - expense;
+        balanceValue.textContent = formatCurrency(balance);
+        balanceValue.classList.toggle('negative', balance < 0);
+        incomeValue.textContent = formatCurrency(income);
+        expenseValue.textContent = formatCurrency(expense);
+      }
+
+      function buildPieSvg(expenses, size) {
+        if (expenses.length === 0) return null;
+        const byCat = {};
+        expenses.forEach(t => {
+          if (!byCat[t.category]) byCat[t.category] = 0;
+          byCat[t.category] += t.amount;
+        });
+        const total = Object.values(byCat).reduce((s, v) => s + v, 0);
+        const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+        size = size || 160;
+        const cx = size / 2, cy = size / 2;
+        const radius = size * 0.425;
+        const innerRadius = size * 0.28;
+        let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`;
+        let currentAngle = -Math.PI / 2;
+        entries.forEach(([catKey, value]) => {
+          const cat = CATEGORIES[catKey] || CATEGORIES.outros;
+          const sliceAngle = (value / total) * Math.PI * 2;
+          const endAngle = currentAngle + sliceAngle;
+          const x1 = cx + radius * Math.cos(currentAngle);
+          const y1 = cy + radius * Math.sin(currentAngle);
+          const x2 = cx + radius * Math.cos(endAngle);
+          const y2 = cy + radius * Math.sin(endAngle);
+          const ix1 = cx + innerRadius * Math.cos(currentAngle);
+          const iy1 = cy + innerRadius * Math.sin(currentAngle);
+          const ix2 = cx + innerRadius * Math.cos(endAngle);
+          const iy2 = cy + innerRadius * Math.sin(endAngle);
+          const largeArc = sliceAngle > Math.PI ? 1 : 0;
+          if (sliceAngle >= Math.PI * 2 - 0.001) {
+            svg += `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="${cat.color}" />`;
+            svg += `<circle cx="${cx}" cy="${cy}" r="${innerRadius}" fill="#ffffff" />`;
+          } else {
+            const path = `
+              M ${x1.toFixed(2)} ${y1.toFixed(2)}
+              A ${radius} ${radius} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}
+              L ${ix2.toFixed(2)} ${iy2.toFixed(2)}
+              A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${ix1.toFixed(2)} ${iy1.toFixed(2)}
+              Z
+            `;
+            svg += `<path d="${path}" fill="${cat.color}" stroke="#ffffff" stroke-width="2" />`;
+          }
+          currentAngle = endAngle;
+        });
+        svg += `<text x="${cx}" y="${cy - 4}" text-anchor="middle" font-size="${size * 0.09}" fill="#7a8b82" font-family="Arial">Total</text>`;
+        svg += `<text x="${cx}" y="${cy + size * 0.1}" text-anchor="middle" font-size="${size * 0.11}" font-weight="bold" fill="#1f2e26" font-family="Arial">${formatCurrency(total)}</text>`;
+        svg += '</svg>';
+        return { svg, entries, total };
+      }
+
+      function renderPieForType(contentEl, labelEl, type) {
+        let periodTxs = transactions.filter(t => t.type === type);
+        if (currentMonth) periodTxs = periodTxs.filter(t => getMonthKey(t.date) === currentMonth);
+        if (currentMonth) {
+          const [y, m] = currentMonth.split('-');
+          const d = new Date(parseInt(y), parseInt(m) - 1, 1);
+          const lbl = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+          labelEl.textContent = lbl.charAt(0).toUpperCase() + lbl.slice(1);
+        } else {
+          labelEl.textContent = 'todo o histórico';
+        }
+        if (periodTxs.length === 0) {
+          contentEl.innerHTML = `<div class="chart-empty">Sem ${type === 'expense' ? 'despesas' : 'receitas'} para exibir</div>`;
+          return;
+        }
+        const result = buildPieSvg(periodTxs, 160);
+        if (!result) return;
+        const legend = result.entries.map(([catKey, value]) => {
+          const cat = CATEGORIES[catKey] || CATEGORIES.outros;
+          const pct = ((value / result.total) * 100).toFixed(1);
+          return `
+            <div class="legend-item">
+              <span class="legend-dot" style="background:${cat.color}"></span>
+              <span class="legend-name">${cat.icon} ${cat.name}</span>
+              <span class="legend-value">${pct}%</span>
+            </div>
+          `;
+        }).join('');
+        contentEl.innerHTML = `
+          <div class="pie-container">
+            <div class="pie-svg-wrapper">${result.svg}</div>
+            <div class="pie-legend">${legend}</div>
+          </div>
+        `;
+      }
+
+      function renderPieCharts() {
+        renderPieForType(pieExpenseContent, pieExpensePeriodLabel, 'expense');
+        renderPieForType(pieIncomeContent, pieIncomePeriodLabel, 'income');
+      }
+
+      function renderBarChart() {
+        if (transactions.length === 0) {
+          barContent.innerHTML = '<div class="chart-empty">Sem histórico para exibir</div>';
+          scrollHint.classList.add('hidden');
+          return;
+        }
+        const monthsMap = {};
+        transactions.forEach(t => {
+          const k = getMonthKey(t.date);
+          if (!monthsMap[k]) monthsMap[k] = { income: 0, expense: 0 };
+          if (t.type === 'income') monthsMap[k].income += t.amount;
+          else monthsMap[k].expense += t.amount;
+        });
+        const allMonths = Object.keys(monthsMap).sort();
+        const maxValue = Math.max(...allMonths.map(m => Math.max(monthsMap[m].income, monthsMap[m].expense)), 1);
+        const currentMonthKey = getCurrentMonthKey();
+        const totalMonths = allMonths.length;
+        const wrapperWidth = barsScrollWrapper.clientWidth;
+        const availableWidth = wrapperWidth > 0 ? wrapperWidth : 340;
+        const monthWidth = availableWidth / MONTHS_VISIBLE;
+        const totalWidth = monthWidth * totalMonths;
+        let barsHtml = '<div class="bars-container" style="width:' + totalWidth + 'px; min-width:' + availableWidth + 'px;">';
+        allMonths.forEach(mk => {
+          const data = monthsMap[mk];
+          const incomeH = (data.income / maxValue) * 100;
+          const expenseH = (data.expense / maxValue) * 100;
+          const [y, m] = mk.split('-');
+          const monthShort = new Date(parseInt(y), parseInt(m) - 1, 1)
+            .toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
+          const isCurrent = mk === currentMonthKey;
+          barsHtml += `
+            <div class="bar-group ${isCurrent ? 'current' : ''}"
+                 style="width:${monthWidth}px; flex:0 0 ${monthWidth}px;"
+                 title="${getMonthLabel(mk + '-01')}\nReceitas: ${formatCurrency(data.income)}\nDespesas: ${formatCurrency(data.expense)}">
+              <div class="bar-column">
+                <div class="bar bar-income" style="height:${incomeH}%"></div>
+                <div class="bar bar-expense" style="height:${expenseH}%"></div>
+              </div>
+              <div class="bar-label">${monthShort}/${y.slice(-2)}</div>
+            </div>
+          `;
+        });
+        barsHtml += '</div>';
+        barContent.innerHTML = barsHtml;
+        if (totalMonths > MONTHS_VISIBLE) scrollHint.classList.remove('hidden');
+        else scrollHint.classList.add('hidden');
+        setTimeout(() => { barsScrollWrapper.scrollLeft = barsScrollWrapper.scrollWidth; }, 50);
+      }
+
+      async function exportExcel() {
+        if (transactions.length === 0) { showToast('Nenhum lançamento para exportar', 'error'); return; }
+        try {
+          const sorted = [...transactions].sort((a, b) => {
+            if (a.date !== b.date) return a.date.localeCompare(b.date);
+            return a.createdAt - b.createdAt;
+          });
+          const data = sorted.map(t => ({
+            'Data': formatDateBR(t.date),
+            'Tipo': t.type === 'income' ? 'Receita' : 'Despesa',
+            'Categoria': (CATEGORIES[t.category] || CATEGORIES.outros).name,
+            'Descrição': t.desc,
+            'Valor (R$)': t.type === 'income' ? t.amount : -t.amount
+          }));
+          const ws = XLSX.utils.json_to_sheet(data);
+          ws['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 16 }, { wch: 40 }, { wch: 14 }];
+          const totalIncome = sorted.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+          const totalExpense = sorted.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+          const totalBalance = totalIncome - totalExpense;
+          const startRow = data.length + 2;
+          XLSX.utils.sheet_add_aoa(ws, [
+            ['', '', '', 'Total Receitas', totalIncome],
+            ['', '', '', 'Total Despesas', -totalExpense],
+            ['', '', '', 'Saldo Final', totalBalance]
+          ], { origin: `A${startRow}` });
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, 'Histórico');
+          const now = new Date();
+          const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+          const fileName = `financas_historico_${dateStr}.xlsx`;
+          const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+          const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          await shareOrDownload(blob, fileName, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        } catch (err) {
+          console.error(err);
+          showToast('Erro ao gerar Excel', 'error');
+        }
+      }
+
+      function drawPieOnCanvas(txs, size, bgColor) {
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const c = canvas.getContext('2d');
+        c.fillStyle = bgColor || '#ffffff';
+        c.fillRect(0, 0, size, size);
+        if (txs.length === 0) return canvas.toDataURL('image/png');
+        const byCat = {};
+        txs.forEach(t => { byCat[t.category] = (byCat[t.category] || 0) + t.amount; });
+        const total = Object.values(byCat).reduce((s, v) => s + v, 0);
+        const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+        const cx = size / 2, cy = size / 2;
+        const radius = size * 0.42, innerRadius = size * 0.26;
+        let currentAngle = -Math.PI / 2;
+        entries.forEach(([catKey, value]) => {
+          const cat = CATEGORIES[catKey] || CATEGORIES.outros;
+          const sliceAngle = (value / total) * Math.PI * 2;
+          const endAngle = currentAngle + sliceAngle;
+          c.beginPath();
+          c.moveTo(cx, cy);
+          c.arc(cx, cy, radius, currentAngle, endAngle);
+          c.closePath();
+          c.fillStyle = cat.color;
+          c.fill();
+          c.strokeStyle = '#ffffff';
+          c.lineWidth = 2;
+          c.stroke();
+          currentAngle = endAngle;
+        });
+        c.beginPath();
+        c.arc(cx, cy, innerRadius, 0, Math.PI * 2);
+        c.fillStyle = bgColor || '#ffffff';
+        c.fill();
+        c.fillStyle = '#7a8b82';
+        c.font = `bold ${Math.round(size * 0.075)}px Arial`;
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText('Total', cx, cy - size * 0.04);
+        c.fillStyle = '#1f2e26';
+        c.font = `bold ${Math.round(size * 0.09)}px Arial`;
+        c.fillText(formatCurrency(total), cx, cy + size * 0.055);
+        return canvas.toDataURL('image/png');
+      }
+
+      function hexToRgb(hex) {
+        return [
+          parseInt(hex.slice(1, 3), 16),
+          parseInt(hex.slice(3, 5), 16),
+          parseInt(hex.slice(5, 7), 16)
+        ];
+      }
+
+      async function exportPdf() {
+        if (transactions.length === 0 && getFilteredTransactions().length === 0) {
+          showToast('Nenhum lançamento para exportar', 'error');
+          return;
+        }
+        exportPdfBtn.disabled = true;
+        try {
+          const { jsPDF } = window.jspdf;
+          const doc = new jsPDF('p', 'mm', 'a4');
+          const pageW = doc.internal.pageSize.getWidth();
+          const pageH = doc.internal.pageSize.getHeight();
+          const margin = 12;
+          const contentW = pageW - margin * 2;
+          const
