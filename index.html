@@ -1577,4 +1577,362 @@
           const pageH = doc.internal.pageSize.getHeight();
           const margin = 12;
           const contentW = pageW - margin * 2;
-          const
+          const filtered = getFilteredTransactions();
+          let filterLabel = 'Todo o histórico';
+          if (currentMonth) {
+            const [y, m] = currentMonth.split('-');
+            const d = new Date(parseInt(y), parseInt(m) - 1, 1);
+            const lbl = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+            filterLabel = lbl.charAt(0).toUpperCase() + lbl.slice(1);
+          }
+          let catLabel = 'Todas';
+          if (currentFilter !== 'all') catLabel = (CATEGORIES[currentFilter] || CATEGORIES.outros).name;
+          const now = new Date();
+
+          doc.setFillColor(46, 125, 91);
+          doc.rect(0, 0, pageW, 24, 'F');
+          doc.setTextColor(255, 255, 255);
+          doc.setFontSize(16);
+          doc.setFont('helvetica', 'bold');
+          doc.text('Finanças - Relatório', margin, 11);
+          doc.setFontSize(9);
+          doc.setFont('helvetica', 'normal');
+          doc.text(`Gerado em ${now.toLocaleDateString('pt-BR')} às ${now.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'})}`, margin, 18);
+
+          let yPos = 32;
+          doc.setTextColor(31, 46, 38);
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.text('Resumo do período', margin, yPos);
+          doc.text('Resumo do histórico', margin + contentW / 2, yPos);
+          yPos += 5;
+
+          const fIncome = filtered.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+          const fExpense = filtered.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+          const fBalance = fIncome - fExpense;
+          const allIncome = transactions.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+          const allExpense = transactions.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+          const allBalance = allIncome - allExpense;
+          const colW = (contentW - 4) / 2;
+
+          doc.setDrawColor(220, 228, 223);
+          doc.setFillColor(244, 247, 245);
+          doc.roundedRect(margin, yPos, colW, 26, 2, 2, 'FD');
+          doc.setFontSize(8);
+          doc.setTextColor(122, 139, 130);
+          doc.setFont('helvetica', 'normal');
+          doc.text(`Filtro: ${truncate(filterLabel + ' · ' + catLabel, 34)}`, margin + 3, yPos + 5);
+          doc.setFontSize(9);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(39, 174, 96);
+          doc.text(`Receitas: ${formatCurrency(fIncome)}`, margin + 3, yPos + 11);
+          doc.setTextColor(231, 76, 60);
+          doc.text(`Despesas: ${formatCurrency(fExpense)}`, margin + 3, yPos + 17);
+          doc.setTextColor(fBalance >= 0 ? 39 : 231, fBalance >= 0 ? 174 : 76, fBalance >= 0 ? 96 : 60);
+          doc.text(`Saldo: ${formatCurrency(fBalance)}`, margin + 3, yPos + 23);
+
+          const rightX = margin + contentW / 2;
+          doc.setFillColor(244, 247, 245);
+          doc.roundedRect(rightX, yPos, colW, 26, 2, 2, 'FD');
+          doc.setFontSize(8);
+          doc.setTextColor(122, 139, 130);
+          doc.setFont('helvetica', 'normal');
+          doc.text('Todos os lançamentos', rightX + 3, yPos + 5);
+          doc.setFontSize(9);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(39, 174, 96);
+          doc.text(`Receitas: ${formatCurrency(allIncome)}`, rightX + 3, yPos + 11);
+          doc.setTextColor(231, 76, 60);
+          doc.text(`Despesas: ${formatCurrency(allExpense)}`, rightX + 3, yPos + 17);
+          doc.setTextColor(allBalance >= 0 ? 39 : 231, allBalance >= 0 ? 174 : 76, allBalance >= 0 ? 96 : 60);
+          doc.text(`Saldo: ${formatCurrency(allBalance)}`, rightX + 3, yPos + 23);
+          yPos += 32;
+
+          doc.setTextColor(31, 46, 38);
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.text('Despesas por categoria', margin, yPos);
+          doc.text('Receitas por categoria', rightX, yPos);
+          yPos += 4;
+
+          const filtroExpenses = filtered.filter(t => t.type === 'expense');
+          const filtroIncomes = filtered.filter(t => t.type === 'income');
+          const allExpenses = transactions.filter(t => t.type === 'expense');
+          const allIncomes = transactions.filter(t => t.type === 'income');
+
+          const pieSizeMm = 50;
+          const legendGap = 3;
+          const legendStartOffset = pieSizeMm + legendGap;
+          const pctWidth = 13;
+          const markerW = 4;
+          const legendAreaW = colW - legendStartOffset;
+          const nameAreaW = legendAreaW - markerW - pctWidth - 1;
+          const charWidthMm = 1.35;
+          const maxNameChars = Math.max(6, Math.floor(nameAreaW / charWidthMm));
+
+          const drawPieWithLegend = (txList, xCol, startY, emptyLabel) => {
+            if (txList.length > 0) {
+              const png = drawPieOnCanvas(txList, 260, '#ffffff');
+              doc.addImage(png, 'PNG', xCol, startY, pieSizeMm, pieSizeMm);
+              doc.setFontSize(7);
+              doc.setFont('helvetica', 'normal');
+              const byCat = {};
+              txList.forEach(t => { byCat[t.category] = (byCat[t.category] || 0) + t.amount; });
+              const total = Object.values(byCat).reduce((s, v) => s + v, 0);
+              const entries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+              const legendX = xCol + legendStartOffset;
+              let ly = startY + 4;
+              entries.slice(0, 8).forEach(([catKey, val]) => {
+                const cat = CATEGORIES[catKey] || CATEGORIES.outros;
+                const pct = ((val / total) * 100).toFixed(1) + '%';
+                const rgb = hexToRgb(cat.color);
+                doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+                doc.rect(legendX, ly - 2.3, markerW - 1, 2.4, 'F');
+                const nome = truncate(cat.name, maxNameChars);
+                doc.setTextColor(31, 46, 38);
+                doc.text(nome, legendX + markerW + 1, ly);
+                doc.setTextColor(122, 139, 130);
+                doc.text(pct, xCol + colW - pctWidth + 1, ly);
+                ly += 4.3;
+              });
+            } else {
+              doc.setFontSize(8);
+              doc.setTextColor(122, 139, 130);
+              doc.setFont('helvetica', 'italic');
+              doc.text(emptyLabel, xCol, startY + 10);
+            }
+          };
+
+          drawPieWithLegend(filtroExpenses, margin, yPos, 'Sem despesas no período');
+          drawPieWithLegend(filtroIncomes, rightX, yPos, 'Sem receitas no período');
+          yPos += pieSizeMm + 6;
+
+          doc.setTextColor(31, 46, 38);
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.text('Despesas por categoria (histórico)', margin, yPos);
+          doc.text('Receitas por categoria (histórico)', rightX, yPos);
+          yPos += 4;
+          drawPieWithLegend(allExpenses, margin, yPos, 'Sem despesas no histórico');
+          drawPieWithLegend(allIncomes, rightX, yPos, 'Sem receitas no histórico');
+          yPos += pieSizeMm + 6;
+
+          doc.setTextColor(31, 46, 38);
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.text(`Lançamentos do filtro atual (${filtered.length})`, margin, yPos);
+          yPos += 5;
+
+          const colX = {
+            data: margin, tipo: margin + 20, cat: margin + 36,
+            desc: margin + 62, valor: pageW - margin - 22
+          };
+
+          const drawTableHeader = (y) => {
+            doc.setFillColor(46, 125, 91);
+            doc.rect(margin, y, contentW, 7, 'F');
+            doc.setTextColor(255, 255, 255);
+            doc.setFontSize(7.5);
+            doc.setFont('helvetica', 'bold');
+            doc.text('Data', colX.data + 1, y + 4.5);
+            doc.text('Tipo', colX.tipo + 1, y + 4.5);
+            doc.text('Categoria', colX.cat + 1, y + 4.5);
+            doc.text('Descrição', colX.desc + 1, y + 4.5);
+            doc.text('Valor', colX.valor + 1, y + 4.5);
+            doc.setFont('helvetica', 'normal');
+            return y + 7;
+          };
+
+          yPos = drawTableHeader(yPos);
+          doc.setFontSize(7);
+          doc.setFont('helvetica', 'normal');
+
+          const byMonth = {};
+          filtered.forEach(tx => {
+            const mk = getMonthKey(tx.date);
+            if (!byMonth[mk]) byMonth[mk] = [];
+            byMonth[mk].push(tx);
+          });
+
+          const sortedMonths = Object.keys(byMonth).sort().reverse();
+          let rowIndex = 0;
+
+          sortedMonths.forEach(mk => {
+            const monthTxs = byMonth[mk];
+            if (yPos > pageH - 20) { doc.addPage(); yPos = drawTableHeader(15); }
+            doc.setFillColor(225, 232, 227);
+            doc.rect(margin, yPos, contentW, 5.5, 'F');
+            doc.setTextColor(31, 46, 38);
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'bold');
+            doc.text(getMonthLabel(monthTxs[0].date), margin + 2, yPos + 4);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(7);
+            yPos += 5.5;
+
+            monthTxs.forEach(tx => {
+              if (yPos > pageH - 15) { doc.addPage(); yPos = drawTableHeader(15); }
+              const cat = CATEGORIES[tx.category] || CATEGORIES.outros;
+              const isIncome = tx.type === 'income';
+              if (rowIndex % 2 === 1) {
+                doc.setFillColor(249, 251, 250);
+                doc.rect(margin, yPos, contentW, 5.5, 'F');
+              }
+              rowIndex++;
+              doc.setTextColor(31, 46, 38);
+              doc.setFontSize(7);
+              doc.text(formatDateBR(tx.date), colX.data + 1, yPos + 4);
+              doc.text(isIncome ? 'Receita' : 'Despesa', colX.tipo + 1, yPos + 4);
+              doc.text(truncate(cat.name, 14), colX.cat + 1, yPos + 4);
+              doc.text(truncate(tx.desc, 38), colX.desc + 1, yPos + 4);
+              doc.setTextColor(isIncome ? 39 : 231, isIncome ? 174 : 76, isIncome ? 96 : 60);
+              doc.setFont('helvetica', 'bold');
+              const valStr = (isIncome ? '+' : '-') + ' ' + formatCurrency(tx.amount).replace('R$', '').trim();
+              doc.text(valStr, colX.valor + 1, yPos + 4);
+              doc.setFont('helvetica', 'normal');
+              yPos += 5.5;
+            });
+          });
+
+          if (filtered.length === 0) {
+            doc.setTextColor(122, 139, 130);
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'italic');
+            doc.text('Nenhum lançamento no filtro atual', margin + 2, yPos + 5);
+          }
+
+          const totalPages = doc.internal.getNumberOfPages();
+          for (let i = 1; i <= totalPages; i++) {
+            doc.setPage(i);
+            doc.setFontSize(7);
+            doc.setTextColor(150);
+            doc.text(`Página ${i} de ${totalPages}`, pageW - margin, pageH - 5, { align: 'right' });
+            doc.text('Finanças - Relatório', margin, pageH - 5);
+          }
+
+          const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+          const fileName = `financas_relatorio_${dateStr}.pdf`;
+          const pdfBlob = doc.output('blob');
+          await shareOrDownload(pdfBlob, fileName, 'application/pdf');
+        } catch (err) {
+          console.error(err);
+          showToast('Erro ao gerar PDF: ' + (err.message || ''), 'error');
+        } finally {
+          exportPdfBtn.disabled = false;
+        }
+      }
+
+      addExpenseBtn.addEventListener('click', () => {
+        addTransaction(descInput.value, amountInput.value, categoryInput.value, dateInput.value, 'expense');
+      });
+      addIncomeBtn.addEventListener('click', () => {
+        addTransaction(descInput.value, amountInput.value, categoryInput.value, dateInput.value, 'income');
+      });
+      amountInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const cat = CATEGORIES[categoryInput.value];
+          if (cat && cat.type === 'income') {
+            addTransaction(descInput.value, amountInput.value, categoryInput.value, dateInput.value, 'income');
+          } else {
+            addTransaction(descInput.value, amountInput.value, categoryInput.value, dateInput.value, 'expense');
+          }
+        }
+      });
+      descInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); amountInput.focus(); }
+      });
+      expenseList.addEventListener('click', (e) => {
+        const button = e.target.closest('button[data-action="delete"]');
+        if (!button) return;
+        const item = button.closest('.expense-item');
+        if (item) deleteTransaction(item.dataset.id);
+      });
+      filtersBar.addEventListener('click', (e) => {
+        const chip = e.target.closest('.filter-chip');
+        if (!chip) return;
+        document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        currentFilter = chip.dataset.filter;
+        chip.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        render();
+        updateSummary();
+        if (navigator.vibrate) navigator.vibrate(15);
+      });
+      monthFilter.addEventListener('change', () => {
+        currentMonth = monthFilter.value;
+        render();
+        updateSummary();
+        renderPieCharts();
+        if (navigator.vibrate) navigator.vibrate(15);
+      });
+      clearMonthBtn.addEventListener('click', () => {
+        monthFilter.value = '';
+        currentMonth = '';
+        render();
+        updateSummary();
+        renderPieCharts();
+        if (navigator.vibrate) navigator.vibrate(15);
+      });
+      exportExcelBtn.addEventListener('click', exportExcel);
+      exportPdfBtn.addEventListener('click', exportPdf);
+
+      let hintHidden = false;
+      barsScrollWrapper.addEventListener('scroll', () => {
+        if (!hintHidden) {
+          hintHidden = true;
+          scrollHint.classList.add('hidden');
+        }
+      }, { passive: true });
+
+      let resizeTimeout;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => { renderBarChart(); }, 250);
+      });
+
+      document.addEventListener('touchstart', (e) => {
+        if (e.touches.length > 1) e.preventDefault();
+      }, { passive: false });
+
+      const style = document.createElement('style');
+      style.textContent = `
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          25% { transform: translateX(-6px); }
+          75% { transform: translateX(6px); }
+        }
+      `;
+      document.head.appendChild(style);
+
+      loadTransactions();
+      monthFilter.value = currentMonth;
+      dateInput.value = todayISO();
+      render();
+      updateSummary();
+      renderPieCharts();
+      renderBarChart();
+
+      if (window.matchMedia('(min-width: 600px)').matches) {
+        setTimeout(() => descInput.focus(), 300);
+      }
+
+      window.addEventListener('beforeunload', saveTransactions);
+
+      // ============ REGISTRO DO SERVICE WORKER ============
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./sw.js')
+            .then((registration) => {
+              console.log('[App] Service Worker registrado:', registration.scope);
+            })
+            .catch((err) => {
+              console.warn('[App] Falha ao registrar Service Worker:', err);
+            });
+        });
+      }
+
+    })();
+  </script>
+</body>
+</html>
